@@ -3,6 +3,7 @@ require("dotenv").config();
 const express = require("express");
 const app = express();
 const cors = require("cors");
+const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 const client = new MongoClient(process.env.MONGO_DB_URL, {
   useNewUrlParser: true,
@@ -44,6 +45,9 @@ async function run() {
       .collection("bookings");
     const usersCollection = client.db("doctorsPortal").collection("users");
     const doctorsCollection = client.db("doctorsPortal").collection("doctors");
+    const paymentsCollection = client
+      .db("doctorsPortal")
+      .collection("payments");
 
     // Note: Make sure you run this middleware ware after verify jwt middleware
     const verifyAdmin = async (req, res, next) => {
@@ -104,6 +108,7 @@ async function run() {
           {
             $project: {
               name: 1,
+              price: 1,
               slots: 1,
               booked: {
                 $map: {
@@ -117,6 +122,7 @@ async function run() {
           {
             $project: {
               name: 1,
+              price: 1,
               slots: {
                 $setDifference: ["$slots", "$booked"],
               },
@@ -148,6 +154,13 @@ async function run() {
       res.send(bookings);
     });
 
+    // Get one
+    app.get("/bookings/:id", async (req, res) => {
+      const id = req.params.id;
+      const query = { _id: ObjectId(id) };
+      const booking = await bookingsCollection.findOne(query);
+      res.send(booking);
+    });
     app.post("/bookings", async (req, res) => {
       const booking = req.body;
       const query = {
@@ -165,6 +178,36 @@ async function run() {
       res.send(bookingRes);
     });
 
+    app.post("/create-payment-intent", async (req, res) => {
+      const booking = req.body;
+      const price = booking.price;
+      const amount = price * 100;
+      const paymentIntent = await stripe.paymentIntents.create({
+        currency: "usd",
+        amount: amount,
+        payment_method_types: ["card"],
+      });
+      res.send({
+        clientSecret: paymentIntent.client_secret,
+      });
+    });
+
+    app.post("/payments", async (req, res) => {
+      const getBody = req.body;
+      const payment = await paymentsCollection.insertOne(getBody);
+      console.log(getBody);
+      const id = getBody.bookingId;
+      const filter = { _id: ObjectId(id) };
+      const updatedDoc = {
+        $set: {
+          paid: true,
+          transactionId: getBody.transactionId,
+        },
+      };
+      console.log(updatedDoc);
+      const updatedPayment = bookingsCollection.updateOne(filter, updatedDoc);
+      res.send(payment);
+    });
     // Get JWT token
     app.get("/jwt", async (req, res) => {
       const email = req.query.email;
@@ -214,6 +257,21 @@ async function run() {
       );
       res.send(adminUser);
     });
+
+    // Temporary to add newfield
+    // app.get("/addPrice", async (req, res) => {
+    //   const filter = {};
+    //   const options = { upsert: true };
+    //   const updatedDoc = {
+    //     $set: { price: 99 },
+    //   };
+    //   const price = await appointmentOptionCollection.updateMany(
+    //     filter,
+    //     updatedDoc,
+    //     options
+    //   );
+    //   res.send(price);
+    // });
 
     app.delete("/users/admin/:id", verifyJWT, verifyAdmin, async (req, res) => {
       const id = req.params.id;
